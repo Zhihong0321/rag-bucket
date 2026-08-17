@@ -64,9 +64,13 @@ test("exposes API documentation as HTML, Markdown, and OpenAPI", async () => {
 
   const markdown = await fetch(`${base}/api.md`);
   assert.match(markdown.headers.get("content-type"), /text\/markdown/);
-  assert.match(await markdown.text(), /Create a group/);
+  const markdownBody = await markdown.text();
+  assert.match(markdownBody, /Create a group/);
+  assert.match(markdownBody, /Upload or replace an HTML page/);
+  assert.match(markdownBody, /\n## Publishing API\n/);
 
   const openapi = await (await fetch(`${base}/openapi.json`)).json();
   assert.equal(openapi.openapi, "3.1.0");
   assert.ok(openapi.paths["/v1/groups"]);
+  assert.ok(openapi.paths["/v1/groups/{group}/pages/{filename}"]);
 });

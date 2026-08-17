@@ -177,6 +177,11 @@ function apiMarkdown() {
     "",
     "Send raw HTML. The filename must end in .html or .htm. index.html is publicly available at /r/:group/site.",
     "",
+    "Example:",
+    "curl --upload-file ./index.html -X PUT \"" + PUBLIC_BASE_URL + "/v1/groups/acme/pages/index.html\" -H \"Authorization: Bearer $RAG_BUCKET_API_KEY\" -H \"Content-Type: text/html\"",
+    "",
+    "Public URLs: /r/acme/pages/index.html and /r/acme/site.",
+    "",
     "### Update a group guide",
     "",
     "PUT /v1/groups/:group/README.md",
@@ -200,7 +205,7 @@ function apiMarkdown() {
     "## OpenAPI",
     "",
     "Machine-readable definition: " + PUBLIC_BASE_URL + "/openapi.json",
-  ].join("\\n");
+  ].join("\n");
 }
 
 function openApiDocument() {
@@ -241,7 +246,7 @@ function openApiDocument() {
 function docsPage() {
   const markdownUrl = `${PUBLIC_BASE_URL}/api.md`;
   const openApiUrl = `${PUBLIC_BASE_URL}/openapi.json`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RAG Bucket API</title><style>body{max-width:760px;margin:48px auto;padding:0 20px;font:16px/1.55 system-ui,sans-serif;color:#17202a}code{background:#f2f4f4;padding:2px 4px;border-radius:3px}a{color:#075ecb}h1{margin-bottom:4px}.muted{color:#5d6d7e}</style></head><body><h1>RAG Bucket API</h1><p class="muted">Markdown knowledge buckets optimized for AI web retrieval.</p><p>Choose a documentation format:</p><ul><li><a href="${markdownUrl}">API reference in Markdown</a> — ideal for ChatGPT and quick reading.</li><li><a href="${openApiUrl}">OpenAPI 3.1 JSON</a> — for SDKs, clients, and tooling.</li></ul><p>For AI retrieval, start at <code>/r/&lt;group&gt;</code>.</p></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RAG Bucket API</title><style>body{max-width:760px;margin:48px auto;padding:0 20px;font:16px/1.55 system-ui,sans-serif;color:#17202a}code{background:#f2f4f4;padding:2px 4px;border-radius:3px;overflow-wrap:anywhere}a{color:#075ecb}h1{margin-bottom:4px}.muted{color:#5d6d7e}</style></head><body><h1>RAG Bucket API</h1><p class="muted">Markdown knowledge buckets optimized for AI web retrieval.</p><h2>Host HTML pages</h2><p>Upload an HTML page with <code>PUT /v1/groups/:group/pages/:filename</code>. Uploading <code>index.html</code> makes it available at <code>/r/:group/site</code>.</p><p>Example: <code>PUT /v1/groups/acme/pages/index.html</code></p><p>Choose a documentation format:</p><ul><li><a href="${markdownUrl}">API reference in Markdown</a> — includes cURL examples.</li><li><a href="${openApiUrl}">OpenAPI 3.1 JSON</a> — includes the HTML page endpoints.</li></ul><p>For AI retrieval, start at <code>/r/&lt;group&gt;</code>.</p></body></html>`;
 }
 
 async function readBody(req, limit) {
