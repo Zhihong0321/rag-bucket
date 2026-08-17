@@ -12,7 +12,8 @@ before(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "rag-bucket-"));
   process.env.DATA_DIR = dataDir;
   process.env.RAG_BUCKET_API_KEYS = "test-key";
-  process.env.PUBLIC_BASE_URL = "http://127.0.0.1";
+  // Railway may provide a bare public hostname; the service must normalize it.
+  process.env.PUBLIC_BASE_URL = "rag-b.up-railway.app";
   process.env.PORT = "0";
   const module = await import(`../src/server.js?test=${Date.now()}`);
   server = module.default;

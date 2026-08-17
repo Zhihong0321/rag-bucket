@@ -5,7 +5,14 @@ import { dirname, join, resolve, sep } from "node:path";
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = resolve(process.env.DATA_DIR || "./data");
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, "");
+function normalizePublicBaseUrl(value) {
+  const candidate = String(value || `http://localhost:${PORT}`).trim().replace(/\/$/, "");
+  const absolute = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
+  try { return new URL(absolute).origin; }
+  catch { throw new Error("PUBLIC_BASE_URL must be a valid hostname or http(s) URL."); }
+}
+
+const PUBLIC_BASE_URL = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL);
 const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 const MAX_README_BYTES = 512 * 1024;
 const API_KEYS = (process.env.RAG_BUCKET_API_KEYS || (process.env.NODE_ENV === "production" ? "" : "local-development-key"))
