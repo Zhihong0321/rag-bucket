@@ -49,6 +49,9 @@ test("does not expose the publishing API without a bearer key", async () => {
 });
 
 test("exposes API documentation as HTML, Markdown, and OpenAPI", async () => {
+  const home = await fetch(`${base}/`);
+  assert.equal(home.headers.get("content-type"), "text/html; charset=utf-8");
+
   const docs = await fetch(`${base}/docs`);
   assert.equal(docs.headers.get("content-type"), "text/html; charset=utf-8");
 

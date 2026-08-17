@@ -291,6 +291,7 @@ async function route(req, res) {
   const segments = path.split("/").filter(Boolean).map(decodeURIComponent);
 
   if (req.method === "GET" && path === "/health") return json(res, 200, { ok: true });
+  if (req.method === "GET" && path === "/") return html(res, 200, docsPage());
   if (req.method === "GET" && path === "/docs") return html(res, 200, docsPage());
   if (req.method === "GET" && path === "/api.md") return markdown(res, 200, apiMarkdown());
   if (req.method === "GET" && path === "/openapi.json") return json(res, 200, openApiDocument());

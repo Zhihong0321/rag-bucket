@@ -24,6 +24,7 @@ Public routes:
 | `GET /r/:group/index.json` | Machine-readable catalogue |
 | `GET /r/:group/llms.txt` | AI-friendly catalogue alias |
 | `GET /robots.txt` | Allows ChatGPT/OpenAI crawlers |
+| `GET /` | API documentation landing page |
 | `GET /docs` | Browser-readable API documentation |
 | `GET /api.md` | Markdown API documentation |
 | `GET /openapi.json` | OpenAPI 3.1 specification |
