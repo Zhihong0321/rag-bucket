@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 
@@ -8,8 +8,16 @@ const DATA_DIR = resolve(process.env.DATA_DIR || "./data");
 function normalizePublicBaseUrl(value) {
   const candidate = String(value || `http://localhost:${PORT}`).trim().replace(/\/$/, "");
   const absolute = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
-  try { return new URL(absolute).origin; }
+  let url;
+  try { url = new URL(absolute); }
   catch { throw new Error("PUBLIC_BASE_URL must be a valid hostname or http(s) URL."); }
+  // Railway's generated public domain is "<service>.up.railway.app" (dot). A hyphen there
+  // ("<service>.up-railway.app") does not resolve and has previously been typo'd into this
+  // variable, silently poisoning every URL this service hands out.
+  if (/-railway\.app$/i.test(url.hostname)) {
+    throw new Error(`PUBLIC_BASE_URL "${url.hostname}" looks like a typo of Railway's domain format. Railway uses a dot ("<service>.up.railway.app"), not a hyphen ("<service>.up-railway.app").`);
+  }
+  return url.origin;
 }
 
 const PUBLIC_BASE_URL = normalizePublicBaseUrl(process.env.PUBLIC_BASE_URL);
@@ -118,16 +126,9 @@ function markdown(res, status, body, cacheControl = "public, max-age=300") {
 }
 
 function html(res, status, body) {
-  res.writeHead(status, { "content-type": MIME.html, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" });
+  res.writeHead(status, { "content-type": MIME.html, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
   res.end(body);
 }
-
-/*
-function apiMarkdown() {
-  return `# RAG Bucket API\n\nBase URL: \`${PUBLIC_BASE_URL}\`\n\nRAG Bucket stores Markdown knowledge by company group. Write endpoints require \`Authorization: Bearer <RAG_BUCKET_API_KEY>\`. Public read routes need no authentication and are intended for ChatGPT and other AI web fetchers.\n\n## Public retrieval\n\n| Method | Path | Description |\n| --- | --- | --- |\n| GET | \`/r/:group\` | AI entrypoint: reading guide and source-document links. Start here. |\n| GET | \`/r/:group/README.md\` | The group retrieval guide. |\n| GET | \`/r/:group/docs/:filename\` | A source Markdown document. |\n| GET | \`/r/:group/index.json\` | Machine-readable group and document catalogue. |\n| GET | \`/r/:group/llms.txt\` | AI-friendly alias for the entrypoint. |\n| GET | \`/llms.txt\` | Service-level AI discovery file. |\n| GET | \`/robots.txt\` | Crawler policy allowing OpenAI/ChatGPT access. |\n\n## Publishing API\n\n### Create a group\n\n\`POST /v1/groups\`\n\n\`Content-Type: application/json\`\n\n\`\`\`json\n{\n  "company": "Acme Inc",\n  "slug": "acme",\n  "description": "Product and support knowledge",\n  "readme": "# Acme retrieval guide\\n\\n- Pricing: read \\`pricing-and-plans.md\\`."\n}\n\`\`\`\n\n\`slug\` is optional and is generated from \`company\` when omitted. The group README is the retrieval policy that tells an AI which documents to use.\n\n### Upload or replace a document\n\n\`PUT /v1/groups/:group/documents/:filename?description=...\`\n\nSend the raw Markdown body. The filename must be a descriptive \`.md\` file; \`README.md\` is reserved. Maximum size: 5 MB.\n\n\`\`\`bash\ncurl --upload-file ./pricing-and-plans.md \\\n  -X PUT "${PUBLIC_BASE_URL}/v1/groups/acme/documents/pricing-and-plans.md?description=Current%20pricing" \\\n  -H "Authorization: Bearer $RAG_BUCKET_API_KEY" \\\n  -H "Content-Type: text/markdown"\n\`\`\`\n\n### Update a group guide\n\n\`PUT /v1/groups/:group/README.md\`\n\nSend the complete raw Markdown guide. Maximum size: 512 KB.\n\n### Inspect a group\n\n\`GET /v1/groups/:group\`\n\nReturns group metadata plus its document catalogue.\n\n### Delete a document\n\n\`DELETE /v1/groups/:group/documents/:filename\`\n\n## Status and errors\n\n- \`GET /health\` returns \`{ "ok": true }\`.\n- Errors are JSON: \`{ "error": { "code": "...", "message": "..." } }\`.\n- \`401\`: missing or invalid API key; \`404\`: missing route/group/document; \`409\`: duplicate group; \`413\`: content is too large.\n\n## OpenAPI\n\nMachine-readable definition: [${PUBLIC_BASE_URL}/openapi.json](${PUBLIC_BASE_URL}/openapi.json)\n`;
-}
-
-*/
 
 function apiMarkdown() {
   return [
@@ -141,6 +142,8 @@ function apiMarkdown() {
     "",
     "| Method | Path | Description |",
     "| --- | --- | --- |",
+    "| GET | / | Visual web hub displaying all uploaded knowledge groups and document reader. |",
+    "| GET | /groups.json | Public JSON index of all uploaded knowledge groups. |",
     "| GET | /r/:group | AI entrypoint: reading guide and source-document links. Start here. |",
     "| GET | /r/:group/README.md | The group retrieval guide. |",
     "| GET | /r/:group/docs/:filename | A source Markdown document. |",
@@ -169,7 +172,7 @@ function apiMarkdown() {
     "",
     "Send raw Markdown. The filename must be a descriptive .md file; README.md is reserved. Maximum size: 5 MB.",
     "",
-    "curl --upload-file ./pricing-and-plans.md -X PUT \\\"" + PUBLIC_BASE_URL + "/v1/groups/acme/documents/pricing-and-plans.md?description=Current%20pricing\\\" -H \\\"Authorization: Bearer $RAG_BUCKET_API_KEY\\\" -H \\\"Content-Type: text/markdown\\\"",
+    "curl --upload-file ./pricing-and-plans.md -X PUT \"" + PUBLIC_BASE_URL + "/v1/groups/acme/documents/pricing-and-plans.md?description=Current%20pricing\" -H \"Authorization: Bearer $RAG_BUCKET_API_KEY\" -H \"Content-Type: text/markdown\"",
     "",
     "### Upload or replace an HTML page",
     "",
@@ -225,11 +228,15 @@ function openApiDocument() {
     },
     paths: {
       "/health": { get: { security: [], summary: "Health check", responses: { "200": { description: "Service is healthy" } } } },
+      "/groups.json": { get: { security: [], summary: "List all uploaded groups (Public)", responses: { "200": { description: "List of all groups" } } } },
       "/r/{group}": { get: { security: [], summary: "Fetch the AI retrieval entrypoint", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Markdown group guide and source catalogue", content: { "text/markdown": { schema: { type: "string" } } } }, "404": { description: "Group not found", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } } } } },
       "/r/{group}/docs/{filename}": { get: { security: [], summary: "Fetch a public source document", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.md$" } }], responses: { "200": { description: "Markdown source", content: { "text/markdown": { schema: { type: "string" } } } }, "404": { description: "Document not found" } } } },
       "/r/{group}/pages/{filename}": { get: { security: [], summary: "Fetch a public HTML page", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.html?$" } }], responses: { "200": { description: "Hosted HTML", content: { "text/html": { schema: { type: "string" } } } }, "404": { description: "Page not found" } } } },
-      "/v1/groups": { post: { summary: "Create a company knowledge group", requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/GroupInput" } } } }, responses: { "201": { description: "Group created" }, "401": { description: "Invalid API key" }, "409": { description: "Group already exists" } } } },
-      "/v1/groups/{group}": { get: { summary: "Get authenticated group metadata", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Group catalogue" }, "401": { description: "Invalid API key" }, "404": { description: "Group not found" } } } },
+      "/v1/groups": {
+        get: { summary: "List all groups", responses: { "200": { description: "List of all groups" }, "401": { description: "Invalid API key" } } },
+        post: { summary: "Create a company knowledge group", requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/GroupInput" } } } }, responses: { "201": { description: "Group created" }, "401": { description: "Invalid API key" }, "409": { description: "Group already exists" } } },
+      },
+      "/v1/groups/{group}": { get: { summary: "Get authenticated group metadata", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Group catalogue" }, "401": { description: "Invalid API key" }, "404": { description: "Group not found" } } }, delete: { summary: "Delete a group", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Group deleted" }, "401": { description: "Invalid API key" }, "404": { description: "Group not found" } } } },
       "/v1/groups/{group}/README.md": { put: { summary: "Replace a group retrieval guide", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "text/markdown": { schema: { type: "string" } } } }, responses: { "200": { description: "Guide updated" }, "401": { description: "Invalid API key" } } } },
       "/v1/groups/{group}/documents/{filename}": {
         put: { summary: "Upload or replace a Markdown document", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.md$" } }, { name: "description", in: "query", schema: { type: "string" } }], requestBody: { required: true, content: { "text/markdown": { schema: { type: "string" } } } }, responses: { "200": { description: "Document stored", content: { "application/json": { schema: { type: "object", properties: { document: { $ref: "#/components/schemas/Document" }, url: { type: "string", format: "uri" } } } } } }, "401": { description: "Invalid API key" } } },
@@ -241,12 +248,6 @@ function openApiDocument() {
       },
     },
   };
-}
-
-function docsPage() {
-  const markdownUrl = `${PUBLIC_BASE_URL}/api.md`;
-  const openApiUrl = `${PUBLIC_BASE_URL}/openapi.json`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RAG Bucket API</title><style>body{max-width:760px;margin:48px auto;padding:0 20px;font:16px/1.55 system-ui,sans-serif;color:#17202a}code{background:#f2f4f4;padding:2px 4px;border-radius:3px;overflow-wrap:anywhere}a{color:#075ecb}h1{margin-bottom:4px}.muted{color:#5d6d7e}</style></head><body><h1>RAG Bucket API</h1><p class="muted">Markdown knowledge buckets optimized for AI web retrieval.</p><h2>Host HTML pages</h2><p>Upload an HTML page with <code>PUT /v1/groups/:group/pages/:filename</code>. Uploading <code>index.html</code> makes it available at <code>/r/:group/site</code>.</p><p>Example: <code>PUT /v1/groups/acme/pages/index.html</code></p><p>Choose a documentation format:</p><ul><li><a href="${markdownUrl}">API reference in Markdown</a> — includes cURL examples.</li><li><a href="${openApiUrl}">OpenAPI 3.1 JSON</a> — includes the HTML page endpoints.</li></ul><p>For AI retrieval, start at <code>/r/&lt;group&gt;</code>.</p></body></html>`;
 }
 
 async function readBody(req, limit) {
@@ -299,8 +300,13 @@ async function getGroup(slug) {
 }
 
 async function getDocuments(slug) {
-  const index = await readJson(join(groupDir(slug), "documents.json"));
-  return index.documents || [];
+  try {
+    const index = await readJson(join(groupDir(slug), "documents.json"));
+    return index.documents || [];
+  } catch (error) {
+    if (error.status === 404) return [];
+    throw error;
+  }
 }
 
 async function saveDocuments(slug, documents) {
@@ -325,13 +331,572 @@ function publicGroupUrl(slug) { return `${PUBLIC_BASE_URL}/r/${encodeURIComponen
 function publicDocUrl(slug, filename) { return `${publicGroupUrl(slug)}/docs/${encodeURIComponent(filename)}`; }
 function publicPageUrl(slug, filename) { return `${publicGroupUrl(slug)}/pages/${encodeURIComponent(filename)}`; }
 
+async function listAllGroups() {
+  try {
+    const entries = await readdir(GROUPS_DIR, { withFileTypes: true });
+    const slugs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    const list = [];
+    for (const slug of slugs) {
+      try {
+        const { metadata } = await getGroup(slug);
+        const documents = await getDocuments(slug);
+        const pages = await getPages(slug);
+        list.push({
+          ...metadata,
+          entry_url: publicGroupUrl(slug),
+          readme_url: `${publicGroupUrl(slug)}/README.md`,
+          documents: documents.map((doc) => ({ ...doc, url: publicDocUrl(slug, doc.filename) })),
+          pages: pages.map((page) => ({ ...page, url: publicPageUrl(slug, page.filename) })),
+        });
+      } catch {
+        /* skip incomplete group */
+      }
+    }
+    list.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+    return list;
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 async function publicEntry(slug) {
   const { metadata, readme } = await getGroup(slug);
   const documents = await getDocuments(slug);
+  const pages = await getPages(slug);
   const catalogue = documents.length
     ? documents.map((doc) => `- [${doc.title}](${publicDocUrl(slug, doc.filename)}) — ${doc.description || doc.excerpt}`).join("\n")
     : "_No documents have been uploaded yet._";
-  return `# ${metadata.company} — AI Knowledge Bucket\n\n> This is a machine-readable knowledge source. Start with the guide below, then fetch only the linked documents relevant to the question. Cite the document URLs used in your answer.\n\n## Reading guide\n\n${readme.trim()}\n\n## Source documents\n\n${catalogue}\n\n## Machine endpoints\n\n- JSON catalogue: ${publicGroupUrl(slug)}/index.json\n- LLM catalogue: ${publicGroupUrl(slug)}/llms.txt\n- Guide: ${publicGroupUrl(slug)}/README.md\n`;
+  const pagesCatalogue = pages.length
+    ? "\n\n## Hosted Web Pages\n\n" + pages.map((p) => `- [${p.filename}](${publicPageUrl(slug, p.filename)})`).join("\n")
+    : "";
+  return `# ${metadata.company} — AI Knowledge Bucket\n\n> This is a machine-readable knowledge source. Start with the guide below, then fetch only the linked documents relevant to the question. Cite the document URLs used in your answer.\n\n## Reading guide\n\n${readme.trim()}\n\n## Source documents\n\n${catalogue}${pagesCatalogue}\n\n## Machine endpoints\n\n- JSON catalogue: ${publicGroupUrl(slug)}/index.json\n- LLM catalogue: ${publicGroupUrl(slug)}/llms.txt\n- Guide: ${publicGroupUrl(slug)}/README.md\n`;
+}
+
+function hubHtml(groups) {
+  const totalDocs = groups.reduce((acc, g) => acc + (g.documents?.length || 0), 0);
+  const totalPages = groups.reduce((acc, g) => acc + (g.pages?.length || 0), 0);
+  const groupsJsonStr = JSON.stringify(groups).replace(/</g, '\\u003c');
+  const baseUrl = PUBLIC_BASE_URL;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG Bucket — Knowledge Groups Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    :root {
+      --bg: #090d16;
+      --bg-surface: #111726;
+      --bg-card: #151d30;
+      --bg-card-hover: #1b253d;
+      --border: #222f4c;
+      --border-focus: #3b82f6;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.12);
+      --success: #10b981;
+      --success-bg: rgba(16, 185, 129, 0.12);
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      padding-bottom: 60px;
+    }
+    .container { max-width: 1360px; margin: 0 auto; padding: 0 24px; }
+    header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      backdrop-filter: blur(8px);
+    }
+    .header-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 68px;
+      gap: 16px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--text-main);
+    }
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #1e40af, #0284c7);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 17px;
+      color: #fff;
+    }
+    .brand-text h1 { font-size: 16px; font-weight: 700; }
+    .brand-text p { font-size: 12px; color: var(--text-dim); }
+    .top-links { display: flex; align-items: center; gap: 10px; }
+    .service-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      background: #172033;
+      border: 1px solid var(--border);
+      border-radius: 9999px;
+      font-size: 12px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-family: var(--font-mono);
+    }
+    .service-badge:hover { border-color: var(--border-focus); color: var(--text-main); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); }
+    .hero-section { padding: 32px 0 24px; }
+    .hero-title { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px; }
+    .hero-subtitle { color: var(--text-muted); font-size: 14px; max-width: 800px; }
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .stat-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+    }
+    .stat-label { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 4px; }
+    .stat-value { font-size: 24px; font-weight: 700; color: var(--text-main); font-family: var(--font-mono); }
+    .controls-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      margin-bottom: 24px;
+    }
+    .search-box { position: relative; flex: 1; min-width: 260px; }
+    .search-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 10px 14px 10px 36px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+    }
+    .search-input:focus { border-color: var(--border-focus); }
+    .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-dim); }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-main);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      font-family: inherit;
+    }
+    .btn:hover { background: var(--bg-card-hover); border-color: var(--border-focus); }
+    .btn-primary { background: #2563eb; border-color: #3b82f6; color: #ffffff; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+    .groups-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 20px;
+    }
+    @media (max-width: 768px) { .groups-grid { grid-template-columns: 1fr; } }
+    .group-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .group-card:hover { transform: translateY(-2px); border-color: #334e7a; }
+    .group-title { font-size: 16px; font-weight: 700; color: #fff; line-height: 1.35; }
+    .group-slug {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+      background: var(--accent-glow);
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-top: 4px;
+      display: inline-block;
+      word-break: break-all;
+    }
+    .group-desc { font-size: 13px; color: var(--text-muted); margin: 10px 0 14px; line-height: 1.45; }
+    .docs-section {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    .docs-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 8px; }
+    .doc-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .doc-item:last-child { margin-bottom: 0; }
+    .doc-item:hover { background: #18233c; border-color: var(--border-focus); }
+    .doc-name { font-family: var(--font-mono); font-size: 12px; color: var(--text-main); display: flex; align-items: center; gap: 6px; }
+    .doc-action-tag { font-size: 11px; color: var(--accent); background: rgba(56, 189, 248, 0.1); padding: 2px 6px; border-radius: 4px; }
+    .group-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    .endpoints-links { display: flex; gap: 8px; }
+    .link-tag { font-size: 12px; color: var(--text-muted); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+    .link-tag:hover { color: var(--accent); text-decoration: underline; }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 7, 13, 0.85);
+      backdrop-filter: blur(6px);
+      z-index: 50;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-box {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 960px;
+      height: 88vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-header h2 { font-size: 17px; font-weight: 700; color: #fff; }
+    .modal-header p { font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); }
+    .modal-body { flex: 1; overflow-y: auto; padding: 24px 30px; background: var(--bg); }
+    .markdown-content { font-size: 14px; color: #cbd5e1; line-height: 1.7; }
+    .markdown-content h1, .markdown-content h2, .markdown-content h3 { color: #fff; margin: 18px 0 10px; font-weight: 700; }
+    .markdown-content h1 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .markdown-content p { margin-bottom: 12px; }
+    .markdown-content ul, .markdown-content ol { margin-left: 20px; margin-bottom: 14px; }
+    .markdown-content blockquote { border-left: 3px solid var(--accent); padding: 8px 16px; background: rgba(56, 189, 248, 0.05); margin-bottom: 14px; }
+    .markdown-content table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+    .markdown-content th, .markdown-content td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+    .markdown-content th { background: var(--bg-surface); font-weight: 600; color: #fff; }
+    .markdown-content code { font-family: var(--font-mono); background: #1e293b; color: #38bdf8; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .markdown-content pre { background: #0f172a; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px; overflow-x: auto; margin: 14px 0; }
+    .markdown-content pre code { background: transparent; padding: 0; color: #f1f5f9; }
+    .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      background: var(--bg-card);
+      border-top: 1px solid var(--border);
+    }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      border: 1px solid #3b82f6;
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      z-index: 100;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.2s ease;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container header-inner">
+      <a href="/" class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <h1>RAG Knowledge Hub</h1>
+          <p>Markdown Knowledge Buckets for AI</p>
+        </div>
+      </a>
+      <div class="top-links">
+        <a href="/groups.json" target="_blank" class="service-badge">
+          <span>{ } groups.json</span>
+        </a>
+        <a href="/openapi.json" target="_blank" class="service-badge">
+          <span class="status-dot"></span>
+          <span>OpenAPI 3.1</span>
+        </a>
+        <a href="/api.md" target="_blank" class="service-badge">
+          <span>API Docs (MD)</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero-section">
+      <h2 class="hero-title">Uploaded Company Knowledge Groups</h2>
+      <p class="hero-subtitle">
+        API-first Markdown knowledge groups optimized for autonomous AI agent retrieval and LLM context synthesis.
+      </p>
+
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-label">Active Groups</div>
+          <div class="stat-value">${groups.length}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Published Markdown Docs</div>
+          <div class="stat-value">${totalDocs}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Hosted Web Pages</div>
+          <div class="stat-value">${totalPages}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">API Status</div>
+          <div class="stat-value" style="color: var(--success); font-size: 18px;">200 OK Live</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="controls-bar">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="search-input" class="search-input" placeholder="Search by company name, slug, or document keyword..." />
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button class="btn" onclick="location.reload()">
+          <span>🔄</span> Refresh
+        </button>
+      </div>
+    </div>
+
+    <div id="groups-container" class="groups-grid"></div>
+  </main>
+
+  <div id="doc-modal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div>
+          <h2 id="modal-doc-title">Document Title</h2>
+          <p id="modal-doc-path">/r/slug/docs/filename.md</p>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div id="modal-doc-content" class="markdown-content"></div>
+      </div>
+      <div class="modal-footer">
+        <a id="modal-doc-raw-link" href="#" target="_blank" class="btn btn-sm">Open Raw Markdown ↗</a>
+        <button class="btn btn-sm" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast">Copied to clipboard</div>
+
+  <script>
+    const GROUPS = ${groupsJsonStr};
+    const BASE_URL = ${JSON.stringify(baseUrl)};
+
+    function renderGroups(list) {
+      const container = document.getElementById('groups-container');
+      if (!list.length) {
+        container.innerHTML = '<div style="grid-column: 1 / -1; padding: 48px 0; text-align: center; color: var(--text-dim);">No knowledge groups found.</div>';
+        return;
+      }
+      container.innerHTML = list.map(g => {
+        const docs = g.documents || [];
+        const pages = g.pages || [];
+        return \`
+          <div class="group-card">
+            <div>
+              <h3 class="group-title">\${escapeHtml(g.company)}</h3>
+              <span class="group-slug">\${escapeHtml(g.slug)}</span>
+              <p class="group-desc">\${escapeHtml(g.description || 'Knowledge bucket for ' + g.company)}</p>
+              
+              <div class="docs-section">
+                <div class="docs-title">Knowledge Documents (\${docs.length})</div>
+                
+                <div class="doc-item" onclick="openDoc('\${g.slug}', 'README.md', '\${g.readme_url}')">
+                  <div class="doc-name">
+                    <span>📖</span>
+                    <span>README.md (Retrieval Guide)</span>
+                  </div>
+                  <span class="doc-action-tag">Read</span>
+                </div>
+
+                \${docs.map(d => \`
+                  <div class="doc-item" onclick="openDoc('\${g.slug}', '\${escapeHtml(d.filename)}', '\${d.url}')">
+                    <div class="doc-name">
+                      <span>📄</span>
+                      <span>\${escapeHtml(d.filename)}</span>
+                    </div>
+                    <span class="doc-action-tag">Read</span>
+                  </div>
+                \`).join('')}
+
+                \${pages.length ? \`
+                  <div class="docs-title" style="margin-top: 10px;">Hosted Web Pages (\${pages.length})</div>
+                  \${pages.map(p => \`
+                    <a class="doc-item" href="\${p.url}" target="_blank" style="text-decoration: none;">
+                      <div class="doc-name">
+                        <span>🌐</span>
+                        <span>\${escapeHtml(p.filename)}</span>
+                      </div>
+                      <span class="doc-action-tag">View Site ↗</span>
+                    </a>
+                  \`).join('')}
+                \` : ''}
+              </div>
+            </div>
+
+            <div class="group-footer">
+              <div class="endpoints-links">
+                <a href="\${g.entry_url}" target="_blank" class="link-tag" title="AI Retrieval Entrypoint">
+                  <span>🌐</span> Entrypoint
+                </a>
+                <a href="\${g.entry_url}/llms.txt" target="_blank" class="link-tag" title="LLMs.txt">
+                  <span>🤖</span> llms.txt
+                </a>
+                <a href="\${g.entry_url}/index.json" target="_blank" class="link-tag" title="JSON catalogue">
+                  <span>⚙️</span> index.json
+                </a>
+              </div>
+              <button class="btn btn-sm" onclick="copyUrl('\${g.entry_url}')">
+                <span>📋</span> Copy URL
+              </button>
+            </div>
+          </div>
+        \`;
+      }).join('');
+    }
+
+    document.getElementById('search-input').addEventListener('input', (e) => {
+      const q = e.target.value.toLowerCase().trim();
+      if (!q) { renderGroups(GROUPS); return; }
+      const filtered = GROUPS.filter(g => 
+        g.company.toLowerCase().includes(q) ||
+        g.slug.toLowerCase().includes(q) ||
+        (g.description && g.description.toLowerCase().includes(q)) ||
+        (g.documents && g.documents.some(d => d.filename.toLowerCase().includes(q)))
+      );
+      renderGroups(filtered);
+    });
+
+    async function openDoc(slug, filename, url) {
+      document.getElementById('modal-doc-title').textContent = filename;
+      document.getElementById('modal-doc-path').textContent = '/r/' + slug + '/' + filename;
+      document.getElementById('modal-doc-raw-link').href = url;
+      document.getElementById('modal-doc-content').innerHTML = '<p style="color: var(--text-dim)">Loading document...</p>';
+      document.getElementById('doc-modal').classList.add('open');
+
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const md = await res.text();
+        if (window.marked) {
+          document.getElementById('modal-doc-content').innerHTML = marked.parse(md);
+        } else {
+          document.getElementById('modal-doc-content').innerHTML = '<pre>' + escapeHtml(md) + '</pre>';
+        }
+      } catch (err) {
+        document.getElementById('modal-doc-content').innerHTML = '<p style="color: #ef4444">Failed to load: ' + err.message + '</p>';
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('doc-modal').classList.remove('open');
+    }
+
+    function copyUrl(url) {
+      navigator.clipboard.writeText(url);
+      const t = document.getElementById('toast');
+      t.textContent = 'Copied: ' + url;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2000);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    renderGroups(GROUPS);
+  </script>
+</body>
+</html>`;
+}
+
+function docsPage() {
+  const markdownUrl = `${PUBLIC_BASE_URL}/api.md`;
+  const openApiUrl = `${PUBLIC_BASE_URL}/openapi.json`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RAG Bucket API</title><style>body{max-width:760px;margin:48px auto;padding:0 20px;font:16px/1.55 system-ui,sans-serif;color:#17202a}code{background:#f2f4f4;padding:2px 4px;border-radius:3px;overflow-wrap:anywhere}a{color:#075ecb}h1{margin-bottom:4px}.muted{color:#5d6d7e}</style></head><body><h1>RAG Bucket API</h1><p class="muted">Markdown knowledge buckets optimized for AI web retrieval.</p><h2>Host HTML pages</h2><p>Upload an HTML page with <code>PUT /v1/groups/:group/pages/:filename</code>. Uploading <code>index.html</code> makes it available at <code>/r/:group/site</code>.</p><p>Example: <code>PUT /v1/groups/acme/pages/index.html</code></p><p>Choose a documentation format:</p><ul><li><a href="${markdownUrl}">API reference in Markdown</a> — includes cURL examples.</li><li><a href="${openApiUrl}">OpenAPI 3.1 JSON</a> — includes the HTML page endpoints.</li></ul><p>For AI retrieval, start at <code>/r/&lt;group&gt;</code>.</p></body></html>`;
 }
 
 async function route(req, res) {
@@ -340,7 +905,14 @@ async function route(req, res) {
   const segments = path.split("/").filter(Boolean).map(decodeURIComponent);
 
   if (req.method === "GET" && path === "/health") return json(res, 200, { ok: true });
-  if (req.method === "GET" && path === "/") return html(res, 200, docsPage());
+  if (req.method === "GET" && (path === "/" || path === "/groups")) {
+    const all = await listAllGroups();
+    return html(res, 200, hubHtml(all));
+  }
+  if (req.method === "GET" && path === "/groups.json") {
+    const all = await listAllGroups();
+    return json(res, 200, { total: all.length, groups: all });
+  }
   if (req.method === "GET" && path === "/docs") return html(res, 200, docsPage());
   if (req.method === "GET" && path === "/api.md") return markdown(res, 200, apiMarkdown());
   if (req.method === "GET" && path === "/openapi.json") return json(res, 200, openApiDocument());
@@ -381,6 +953,10 @@ async function route(req, res) {
   // Authenticated publishing API.
   if (segments[0] === "v1" && segments[1] === "groups") {
     requireAuthorization(req);
+    if (req.method === "GET" && segments.length === 2) {
+      const all = await listAllGroups();
+      return json(res, 200, { total: all.length, groups: all });
+    }
     if (req.method === "POST" && segments.length === 2) {
       const body = await readJsonBody(req);
       const slug = slugify(body.slug || body.company, "company or slug");
