@@ -41,6 +41,13 @@ test("publishes a group and a Markdown document to the AI entrypoint", async () 
 
   const document = await fetch(`${base}/r/acme/docs/pricing.md`);
   assert.match(await document.text(), /Starter costs \$10/);
+
+  const pageUpload = await fetch(`${base}/v1/groups/acme/pages/index.html`, { method: "PUT", headers: auth(), body: "<!doctype html><title>Acme</title><h1>Welcome</h1>" });
+  assert.equal(pageUpload.status, 200);
+
+  const page = await fetch(`${base}/r/acme/site`);
+  assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.match(await page.text(), /Welcome/);
 });
 
 test("does not expose the publishing API without a bearer key", async () => {

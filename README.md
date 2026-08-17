@@ -6,6 +6,7 @@ Each company is a **group**. A group contains:
 
 - `README.md`: an explicit reading guide that tells an AI which documents are authoritative for which questions.
 - one or more descriptively named `.md` documents.
+- optional standalone `.html` pages, served separately from RAG sources.
 - an automatically maintained JSON catalogue and AI entry page.
 
 ## Why the public URL works well for AI retrieval
@@ -21,6 +22,8 @@ Public routes:
 | `GET /r/:group` | Best starting URL; Markdown guide and document links |
 | `GET /r/:group/README.md` | The group reading guide |
 | `GET /r/:group/docs/:filename` | A source Markdown document |
+| `GET /r/:group/pages/:filename` | A hosted HTML page |
+| `GET /r/:group/site` | The group's hosted `index.html` page |
 | `GET /r/:group/index.json` | Machine-readable catalogue |
 | `GET /r/:group/llms.txt` | AI-friendly catalogue alias |
 | `GET /robots.txt` | Allows ChatGPT/OpenAI crawlers |
@@ -76,6 +79,19 @@ curl --upload-file ./pricing-and-plans.md \
   -H "Authorization: Bearer $RAG_BUCKET_API_KEY" \
   -H "Content-Type: text/markdown"
 ```
+
+## Host HTML
+
+Upload a standalone HTML page with the same authenticated API. HTML pages are not included in the RAG document catalogue, so keep authoritative AI content in Markdown.
+
+```bash
+curl --upload-file ./index.html \
+  -X PUT https://your-domain/v1/groups/acme/pages/index.html \
+  -H "Authorization: Bearer $RAG_BUCKET_API_KEY" \
+  -H "Content-Type: text/html"
+```
+
+The page is public at `https://your-domain/r/acme/pages/index.html`; `https://your-domain/r/acme/site` is an alias for `index.html`.
 
 Replace the guide:
 

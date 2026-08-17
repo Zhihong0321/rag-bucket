@@ -57,6 +57,14 @@ function documentName(value) {
   return name;
 }
 
+function pageName(value) {
+  const name = String(value || "").trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}\.html?$/i.test(name)) {
+    throw apiError(400, "filename must be an .html or .htm filename.");
+  }
+  return name;
+}
+
 function groupDir(slug) {
   const target = resolve(GROUPS_DIR, slug);
   if (!target.startsWith(`${GROUPS_DIR}${sep}`)) throw apiError(400, "Invalid group identifier.");
@@ -67,6 +75,13 @@ function docPath(slug, filename) {
   const target = resolve(groupDir(slug), "docs", filename);
   const allowed = `${resolve(groupDir(slug), "docs")}${sep}`;
   if (!target.startsWith(allowed)) throw apiError(400, "Invalid document filename.");
+  return target;
+}
+
+function pagePath(slug, filename) {
+  const target = resolve(groupDir(slug), "pages", filename);
+  const allowed = `${resolve(groupDir(slug), "pages")}${sep}`;
+  if (!target.startsWith(allowed)) throw apiError(400, "Invalid page filename.");
   return target;
 }
 
@@ -129,6 +144,8 @@ function apiMarkdown() {
     "| GET | /r/:group | AI entrypoint: reading guide and source-document links. Start here. |",
     "| GET | /r/:group/README.md | The group retrieval guide. |",
     "| GET | /r/:group/docs/:filename | A source Markdown document. |",
+    "| GET | /r/:group/pages/:filename | A hosted HTML page. |",
+    "| GET | /r/:group/site | The group's index.html page. |",
     "| GET | /r/:group/index.json | Machine-readable group and document catalogue. |",
     "| GET | /r/:group/llms.txt | AI-friendly alias for the entrypoint. |",
     "| GET | /llms.txt | Service-level AI discovery file. |",
@@ -153,6 +170,12 @@ function apiMarkdown() {
     "Send raw Markdown. The filename must be a descriptive .md file; README.md is reserved. Maximum size: 5 MB.",
     "",
     "curl --upload-file ./pricing-and-plans.md -X PUT \\\"" + PUBLIC_BASE_URL + "/v1/groups/acme/documents/pricing-and-plans.md?description=Current%20pricing\\\" -H \\\"Authorization: Bearer $RAG_BUCKET_API_KEY\\\" -H \\\"Content-Type: text/markdown\\\"",
+    "",
+    "### Upload or replace an HTML page",
+    "",
+    "PUT /v1/groups/:group/pages/:filename",
+    "",
+    "Send raw HTML. The filename must end in .html or .htm. index.html is publicly available at /r/:group/site.",
     "",
     "### Update a group guide",
     "",
@@ -192,18 +215,24 @@ function openApiDocument() {
         Error: { type: "object", properties: { error: { type: "object", properties: { code: { type: "string" }, message: { type: "string" } }, required: ["code", "message"] } }, required: ["error"] },
         GroupInput: { type: "object", required: ["company"], properties: { company: { type: "string", example: "Acme Inc" }, slug: { type: "string", example: "acme" }, description: { type: "string" }, readme: { type: "string", description: "Markdown retrieval guide" } } },
         Document: { type: "object", properties: { filename: { type: "string", example: "pricing-and-plans.md" }, title: { type: "string" }, description: { type: "string" }, excerpt: { type: "string" }, updated_at: { type: "string", format: "date-time" }, sha256: { type: "string" } } },
+        Page: { type: "object", properties: { filename: { type: "string", example: "index.html" }, updated_at: { type: "string", format: "date-time" }, sha256: { type: "string" } } },
       },
     },
     paths: {
       "/health": { get: { security: [], summary: "Health check", responses: { "200": { description: "Service is healthy" } } } },
       "/r/{group}": { get: { security: [], summary: "Fetch the AI retrieval entrypoint", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Markdown group guide and source catalogue", content: { "text/markdown": { schema: { type: "string" } } } }, "404": { description: "Group not found", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } } } } },
       "/r/{group}/docs/{filename}": { get: { security: [], summary: "Fetch a public source document", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.md$" } }], responses: { "200": { description: "Markdown source", content: { "text/markdown": { schema: { type: "string" } } } }, "404": { description: "Document not found" } } } },
+      "/r/{group}/pages/{filename}": { get: { security: [], summary: "Fetch a public HTML page", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.html?$" } }], responses: { "200": { description: "Hosted HTML", content: { "text/html": { schema: { type: "string" } } } }, "404": { description: "Page not found" } } } },
       "/v1/groups": { post: { summary: "Create a company knowledge group", requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/GroupInput" } } } }, responses: { "201": { description: "Group created" }, "401": { description: "Invalid API key" }, "409": { description: "Group already exists" } } } },
       "/v1/groups/{group}": { get: { summary: "Get authenticated group metadata", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Group catalogue" }, "401": { description: "Invalid API key" }, "404": { description: "Group not found" } } } },
       "/v1/groups/{group}/README.md": { put: { summary: "Replace a group retrieval guide", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }], requestBody: { required: true, content: { "text/markdown": { schema: { type: "string" } } } }, responses: { "200": { description: "Guide updated" }, "401": { description: "Invalid API key" } } } },
       "/v1/groups/{group}/documents/{filename}": {
         put: { summary: "Upload or replace a Markdown document", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.md$" } }, { name: "description", in: "query", schema: { type: "string" } }], requestBody: { required: true, content: { "text/markdown": { schema: { type: "string" } } } }, responses: { "200": { description: "Document stored", content: { "application/json": { schema: { type: "object", properties: { document: { $ref: "#/components/schemas/Document" }, url: { type: "string", format: "uri" } } } } } }, "401": { description: "Invalid API key" } } },
         delete: { summary: "Delete a Markdown document", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Document deleted" }, "401": { description: "Invalid API key" }, "404": { description: "Document not found" } } },
+      },
+      "/v1/groups/{group}/pages/{filename}": {
+        put: { summary: "Upload or replace a hosted HTML page", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string", pattern: ".+\\.html?$" } }], requestBody: { required: true, content: { "text/html": { schema: { type: "string" } } } }, responses: { "200": { description: "Page stored", content: { "application/json": { schema: { type: "object", properties: { page: { $ref: "#/components/schemas/Page" }, url: { type: "string", format: "uri" } } } } } }, "401": { description: "Invalid API key" } } },
+        delete: { summary: "Delete a hosted HTML page", parameters: [{ name: "group", in: "path", required: true, schema: { type: "string" } }, { name: "filename", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "Page deleted" }, "401": { description: "Invalid API key" }, "404": { description: "Page not found" } } },
       },
     },
   };
@@ -273,8 +302,23 @@ async function saveDocuments(slug, documents) {
   await writeAtomic(join(groupDir(slug), "documents.json"), JSON.stringify({ documents }, null, 2));
 }
 
+async function getPages(slug) {
+  try {
+    const index = await readJson(join(groupDir(slug), "pages.json"));
+    return index.pages || [];
+  } catch (error) {
+    if (error.status === 404) return [];
+    throw error;
+  }
+}
+
+async function savePages(slug, pages) {
+  await writeAtomic(join(groupDir(slug), "pages.json"), JSON.stringify({ pages }, null, 2));
+}
+
 function publicGroupUrl(slug) { return `${PUBLIC_BASE_URL}/r/${encodeURIComponent(slug)}`; }
 function publicDocUrl(slug, filename) { return `${publicGroupUrl(slug)}/docs/${encodeURIComponent(filename)}`; }
+function publicPageUrl(slug, filename) { return `${publicGroupUrl(slug)}/pages/${encodeURIComponent(filename)}`; }
 
 async function publicEntry(slug) {
   const { metadata, readme } = await getGroup(slug);
@@ -311,12 +355,21 @@ async function route(req, res) {
     if (segments.length === 3 && segments[2] === "llms.txt") return markdown(res, 200, await publicEntry(slug));
     if (segments.length === 3 && segments[2] === "index.json") {
       const { metadata } = await getGroup(slug);
-      return json(res, 200, { ...metadata, entry_url: publicGroupUrl(slug), readme_url: `${publicGroupUrl(slug)}/README.md`, documents: (await getDocuments(slug)).map((doc) => ({ ...doc, url: publicDocUrl(slug, doc.filename) })) });
+      return json(res, 200, { ...metadata, entry_url: publicGroupUrl(slug), readme_url: `${publicGroupUrl(slug)}/README.md`, documents: (await getDocuments(slug)).map((doc) => ({ ...doc, url: publicDocUrl(slug, doc.filename) })), pages: (await getPages(slug)).map((page) => ({ ...page, url: publicPageUrl(slug, page.filename) })) });
     }
     if (segments.length === 4 && segments[2] === "docs") {
       const filename = documentName(segments[3]);
       try { return markdown(res, 200, await readFile(docPath(slug, filename), "utf8")); }
       catch (error) { if (error.code === "ENOENT") throw apiError(404, "Document not found.", "not_found"); throw error; }
+    }
+    if (segments.length === 3 && segments[2] === "site") {
+      try { return html(res, 200, await readFile(pagePath(slug, "index.html"), "utf8")); }
+      catch (error) { if (error.code === "ENOENT") throw apiError(404, "No index.html page has been uploaded.", "not_found"); throw error; }
+    }
+    if (segments.length === 4 && segments[2] === "pages") {
+      const filename = pageName(segments[3]);
+      try { return html(res, 200, await readFile(pagePath(slug, filename), "utf8")); }
+      catch (error) { if (error.code === "ENOENT") throw apiError(404, "Page not found.", "not_found"); throw error; }
     }
   }
 
@@ -333,13 +386,14 @@ async function route(req, res) {
       await writeAtomic(join(folder, "group.json"), JSON.stringify(metadata, null, 2));
       await writeAtomic(join(folder, "README.md"), readme);
       await saveDocuments(slug, []);
+      await savePages(slug, []);
       return json(res, 201, { group: metadata, entry_url: publicGroupUrl(slug), api_url: `${PUBLIC_BASE_URL}/v1/groups/${slug}` });
     }
     if (segments.length >= 3) {
       const slug = slugify(segments[2], "group");
       if (req.method === "GET" && segments.length === 3) {
         const { metadata } = await getGroup(slug);
-        return json(res, 200, { ...metadata, entry_url: publicGroupUrl(slug), documents: await getDocuments(slug) });
+        return json(res, 200, { ...metadata, entry_url: publicGroupUrl(slug), documents: await getDocuments(slug), pages: await getPages(slug) });
       }
       if (req.method === "PUT" && segments.length === 4 && segments[3] === "README.md") {
         await getGroup(slug);
@@ -368,6 +422,28 @@ async function route(req, res) {
           await getGroup(slug);
           try { await rm(docPath(slug, filename)); } catch (error) { if (error.code === "ENOENT") throw apiError(404, "Document not found.", "not_found"); throw error; }
           await saveDocuments(slug, (await getDocuments(slug)).filter((doc) => doc.filename.toLowerCase() !== filename.toLowerCase()));
+          return json(res, 200, { ok: true });
+        }
+      }
+      if (segments.length === 5 && segments[3] === "pages") {
+        const filename = pageName(segments[4]);
+        if (req.method === "PUT") {
+          await getGroup(slug);
+          const content = await readBody(req, MAX_DOCUMENT_BYTES);
+          if (!content.trim()) throw apiError(400, "Page cannot be empty.");
+          await writeAtomic(pagePath(slug, filename), content);
+          const pages = await getPages(slug);
+          const record = { filename, updated_at: new Date().toISOString(), sha256: createHash("sha256").update(content).digest("hex") };
+          const index = pages.findIndex((page) => page.filename.toLowerCase() === filename.toLowerCase());
+          if (index >= 0) pages[index] = record; else pages.push(record);
+          pages.sort((a, b) => a.filename.localeCompare(b.filename));
+          await savePages(slug, pages);
+          return json(res, 200, { page: record, url: publicPageUrl(slug, filename) });
+        }
+        if (req.method === "DELETE") {
+          await getGroup(slug);
+          try { await rm(pagePath(slug, filename)); } catch (error) { if (error.code === "ENOENT") throw apiError(404, "Page not found.", "not_found"); throw error; }
+          await savePages(slug, (await getPages(slug)).filter((page) => page.filename.toLowerCase() !== filename.toLowerCase()));
           return json(res, 200, { ok: true });
         }
       }
